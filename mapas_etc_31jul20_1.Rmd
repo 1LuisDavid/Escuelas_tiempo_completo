@@ -1,0 +1,481 @@
+---
+title: "ETC_31JUL20"
+author: "Laura Herrera"
+date: "27/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+require(pacman)
+
+p_load(tidyverse,  ggrepel, ggspatial, sf,  readxl, janitor, treemapify, gganimate, DT, ggthemes, viridis, ggalt, scales, extrafont)
+
+#extrafont
+
+#paquete extrafont
+#font_import() #importar las fuentes de windows
+#loadfonts(device = "win") activar fuentes
+```
+
+
+#directorios
+
+```{r}
+#Desde el escritorio
+
+input = "C:/Data/ETC/input"
+out = "C:/Data/ETC/output"
+graphs = "C:/Data/ETC/graph"
+
+#mapa nacional
+file <- "C:/Data/ETC/mgm2014v6_2/mgm2015v6_2.shp"
+
+```
+
+
+#Primer paso, cargamos nuestras bases 
+
+Las bases que están disponibles en el repositorio con el nombre de "ETC_nacional" y "SNIE"  
+
+```{r}
+
+# etc <- read_csv(paste(input, "ETC_nacional.csv", sep="/"), locale = locale(encoding = "ISO-8859-1")) 
+
+library(readr)
+etc <- read_csv("ETC_nacional.csv", locale = locale(encoding = "ISO-8859-1")) #Escuelas de tiempo completo
+
+
+
+# snie <- read_csv(paste(input, "snie_16_17_inf.csv", sep = "/"))
+
+library(readr)
+snie <- read_csv("snie_16_17_inf.csv")
+
+
+
+
+```
+
+
+
+```{r}
+#explorar información
+
+#opción 1 con el paquete DT:  proporciona una interfaz R para las tablas de datos de la biblioteca de JavaScript Los objetos de datos R (matrices o marcos de datos) se pueden mostrar como tablas en páginas HTML, y DataTables proporciona filtrado, paginación, clasificación y muchas otras características en las tablas.
+
+datatable(etc, rownames = FALSE,
+          options = list(pageLength = 10))
+
+
+#opción 2 - para explorar nuestra base de datos (óptima)
+glimpse(etc)
+glimpse(snie)
+colnames(snie)
+
+
+#limpieza de bases de ETC
+
+etc_cdmx <- etc %>% 
+  clean_names() %>% #janitor
+  select(-turno,  -cve_loc, -nombre_localidad) %>% 
+  rename(cct = clave_cct) %>% 
+  filter(cve_ent == "9")  %>% 
+  distinct(cct, .keep_all = TRUE)
+
+# ¿qué podemos hacer con estos datos?
+#tablas rapidas con el paquete Janitor 
+
+etc_cdmx %>% 
+  tabyl(modalidad) %>% 
+  adorn_pct_formatting(digits = 0, affix_sign = TRUE)
+
+etc_cdmx %>% 
+  tabyl(nombre_municipio) %>% 
+  adorn_pct_formatting(digits = 0, affix_sign = TRUE)
+
+etc_cdmx %>% 
+  tabyl(servicio_alimentacion) %>% 
+  adorn_pct_formatting(digits = 0, affix_sign = TRUE)
+
+
+#limpieza de bases de SNIE
+unique(snie$`Tipo educativo`)
+
+
+coor_df <- snie %>% 
+  clean_names() %>%  #janitor
+  filter(clave_de_la_entidad_federativa == "09"  & nombre_del_control_publico_o_privado == "PÚBLICO" &  tipo_educativo == "EDUCACIÓN BÁSICA") %>%
+  select(cct = clave_del_centro_de_trabajo, 
+         tot.alum = alumnos_total,
+         x =ubicacion_de_la_escuela_localidad_al_oeste_del_meridiano_de_greenwich_expresada_en_grados,
+         y= ubicacion_de_la_escuela_localidad_al_norte_del_ecuador_expresada_en_grados,
+         imu = grado_de_marginacion_a_nivel_localidad) %>% 
+  distinct(cct, .keep_all = TRUE) %>% #sirve para dejar los cct únicos
+  right_join(etc_cdmx, by=c("cct"= "cct")) %>%  #unimos con la base de ETC
+  mutate(cve_mun = formatC(cve_mun, width = 3, format = "d", flag = "00"), #completar las claves 
+         year = sample(2007:2018, 1663, replace=T)) #creando una variable de año
+  
+
+
+
+```
+
+
+
+#Algunos indicadores
+
+```{r}
+
+# El número de alumnos de EB que asisten por delegación
+
+alum_cdmx <- snie %>% 
+  clean_names() %>%  #janitor
+  filter(clave_de_la_entidad_federativa == "09"  & nombre_del_control_publico_o_privado == "PÚBLICO" &   tipo_educativo == "EDUCACIÓN BÁSICA") %>%
+  group_by(cve_mun = clave_del_municipio_o_delegacion) %>% 
+  summarise(alum.cdmx = sum(alumnos_total, na.rm = T)) 
+
+glimpse(alum_cdmx)
+
+#El número de alumnos beneficiados por las ETC por delegación
+
+concen.alum <- coor_df %>% 
+  group_by(cve_mun, alcaldia = nombre_municipio) %>% 
+  summarise(alum.etc = sum(tot.alum, na.rm = T))  %>% 
+  left_join(alum_cdmx) %>% 
+  mutate(pct.etc = (alum.etc/alum.cdmx),
+         pct.label = paste(round(pct.etc*100,2), "%"))  
+
+
+#visualizar la base con un grafico lollipop
+
+concen.alum %>% 
+  ggplot(aes(x =reorder(alcaldia, pct.etc),
+             y = pct.etc)) +
+  geom_lollipop(point.colour="darkorange", point.size=4) +
+  coord_flip() +
+  scale_y_continuous(labels = percent, expand=c(0,0), 
+                     breaks=seq(0, 1, by=0.2),  limits=c(0, 1)) +
+  labs(title="Porcentaje de alumnos beneficiados de las ETC por delegación",  # \n para dar saltos de línea
+       subtitle="",
+       x = "",
+       y = "Porcentaje de alumnos",
+       caption="Elaborado por: Laura Herrera con datos de la SEP 2019 | @Lau_Herre_ra") +
+  theme_minimal() +
+  theme(text=element_text(size=16,  family="Arial Narrow"), 
+        panel.grid.major.y=element_blank(),
+        panel.grid.minor=element_blank(),
+        axis.line.y=element_line(color="#2b2b2b", size=0.15),
+        axis.text.y=element_text(margin=margin(r=0, l=0)),
+        plot.margin=unit(rep(30, 4), "pt"),
+        plot.title=element_text(face="bold"),
+        plot.caption=element_text(size=8, margin=margin(t=10)))
+
+  
+ 
+ggsave(paste(graphs, "lollipop_pctalum.jpg", sep="/"), width=12, height=12)
+
+
+#El número de alumnos beneficiados por las ETC por servicio_alumentación
+
+concen.alum_serv_alim <- coor_df %>% 
+  group_by(cve_mun, alcaldia = nombre_municipio, serv.alim = servicio_alimentacion) %>% 
+  summarise(alum.etc = sum(tot.alum, na.rm = T))  %>% 
+  left_join(alum_cdmx) %>% 
+  mutate(pct.etc = (alum.etc/alum.cdmx),
+         pct.label = paste(round(pct.etc*100,2), "%")) 
+
+
+#prueba 1
+
+#concen.alum_serv_alim %>% 
+#  ggplot(aes(x =reorder(alcaldia, pct.etc),
+#             y = pct.etc)) +
+#  geom_lollipop(point.colour="darkorange", point.size=4) +
+#  coord_flip() +
+#  facet_wrap(~ serv.alim)
+
+
+#grafico de barras apiladas -  #Stacked barchart
+
+
+ggplot() +
+geom_bar(data=concen.alum_serv_alim, 
+         aes(x = reorder(alcaldia, pct.etc), 
+             y= pct.etc, 
+             fill = factor(serv.alim, 
+                           levels = c("SI", "NO"),
+                           labels = c("Sí", "No"))), 
+         stat="identity") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(labels = percent, expand=c(0,0), 
+                     breaks=seq(0, 1, by=0.2),  limits=c(0, 1)) +
+  labs(title="Porcentaje de alumnos beneficiados de las ETC por delegación",  # \n para dar saltos de línea
+       subtitle="Distinguiendo por servicios de alimentación",
+       x = "",
+       y = "Porcentaje de alumnos",
+       fill = "Con alimentos  ",
+       caption="Elaborado por: Laura Herrera con datos de la SEP 2019 | @Lau_Herre_ra") +
+  theme_minimal() +
+  theme(text=element_text(size=16,  family="Arial Narrow"), 
+        panel.grid.major.y=element_blank(),
+        panel.grid.minor=element_blank(),
+        axis.line.y=element_line(color="#2b2b2b", size=0.15),
+        axis.text.y=element_text(margin=margin(r=0, l=0)),
+        plot.margin=unit(rep(30, 4), "pt"),
+        plot.title=element_text(face="bold"),
+        plot.caption=element_text(size=8, margin=margin(t=10)),
+        legend.position = "top")
+
+
+ggsave(paste(graphs, "pctalum.serv.jpg", sep="/"), width=12, height=12)
+
+```
+
+#crecimiento de las escuelas de tiempo completo
+
+```{r}
+
+# etc.year <- read_xlsx(paste(input, "etc_year.xlsx", sep = "/"))
+library(readxl)
+etc.year <- read_excel("etc_year.xlsx")
+
+
+p <-   ggplot(etc.year, aes(year, etc_num)) +
+  geom_col(fill = "purple",alpha = .4 ) +
+  geom_text(aes(label = comma(etc_num)), 
+            vjust = -0.25,
+            size = 3,
+            colour = "black", 
+            fontface = "bold") +
+  scale_y_continuous(labels = comma) +
+  scale_x_continuous(breaks=seq(2007, 2018, by= 1))+
+  labs(x = "", 
+       y = "", 
+       title =  "Crecimiento de las Escuelas de Tiempo Completo",
+       subtitle = "2007- 2018",
+       fill = "",
+       caption="Fuente: Elaboración propia @Lau_Herre_ra con datos de SEP 2020") +
+  theme_minimal() +
+  theme(text=element_text(size=16,  family="Arial Narrow"), 
+        panel.grid = element_blank(),
+        panel.grid.major.y = element_line(color = "white"),
+        panel.ontop = TRUE,
+        axis.line.y=element_line(color="#2b2b2b", size=0.15),
+        axis.line.x=element_line(color="#2b2b2b", size=0.15),
+        axis.text.y=element_text(margin=margin(r=0, l=0)),
+        plot.margin=unit(rep(30, 4), "pt"),
+        plot.title=element_text(face="bold"),
+        plot.caption=element_text(size=8, margin=margin(t=10)))
+
+
+p
+
+p + transition_states(year, wrap = FALSE) +
+  shadow_mark()
+
+anim_save(paste(graphs, "animation.gif", sep = "/"),  width=12, height=12)
+
+# Establezca `wrap = FALSE` para evitar la transición del último estado al primer 
+
+
+```
+
+
+#Hagamos una coropleta
+
+#plasmar el mapa 
+
+```{r}
+df <- st_read("mgm2014v6_2/mgm2015v6_2.shp")
+
+df <- df %>% 
+   filter(CVE_ENT == "09")  %>% 
+   rename(cve_mun = "CVE_MUN")
+
+unique(df$CVE_ENT)
+# df <- st_read(file, quiet=TRUE) %>%  #lector de coordenadas sf
+#    filter(CVE_ENT == "09")  %>% 
+#    rename(cve_mun = "CVE_MUN")
+
+
+#str(df)
+
+df %>% 
+  ggplot() +
+  geom_sf()
+  
+  
+#unir base para proyectar
+
+basedf <- left_join(df, concen.alum)
+glimpse(concen.alum)
+
+```
+
+
+#para agregar etiquetas de las delegaciones y de los porcentajes
+
+```{r}
+
+# comprime la base y los convierte en puntos
+basedf_points <- st_point_on_surface(df)
+
+# recuperar las coordenadas de los centroides del mapa
+basedf_coords <- as.data.frame(st_coordinates(basedf_points))
+basedf_coords$NAME <- df$NOM_MUN
+basedf_coords$porcentajes <- basedf$pct.label
+
+
+#Para zoom
+
+states <- as.data.frame(st_coordinates(st_centroid(basedf_points)))
+states$NAME <- df$NOM_MUN
+
+```
+
+
+
+#coropleta
+
+```{r}
+
+map  <- ggplot() +
+  geom_sf(data = basedf, aes(fill = pct.etc*100)) +
+  scale_fill_viridis_b(trans = "sqrt", alpha = .4) +
+  geom_text_repel(data = basedf_coords, aes(X, Y, label = NAME), colour = "black") +
+  annotation_scale(location = "bl", width_hint = 0.4) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  labs(title = "Porcentaje de escuelas beneficiadas por el programa de ETC", 
+       subtitle = "CDMX | Con y sin ingesta de alimentos",
+       caption="Fuente: Elaboracion propia con datos de la SEP 2019",
+       x = "Latitud",
+       y = "Longitud",
+       fill = "Porcentaje") +
+  theme_bw() +
+  theme(text=element_text(size=16,  family="Arial Narrow"),
+        panel.grid.major = element_line(color = gray(0.5), 
+                                        linetype = "dashed", 
+                                        size = 0.5), 
+        panel.background = element_rect(fill = "aliceblue")) 
+
+map
+
+
+ggsave(paste(graphs, "map_coro.jpg", sep="/"), width=12, height=12, dpi = 150)
+
+```
+
+
+
+#proyectar puntos
+
+La forma más rápida de agregar coordenadas de puntos es con la función <geom_point>, que funciona en cualquier coordenada X/Y, de puntos de datos regulares (es decir, no geográficos). Como tal, podemos ajustar todas las características de los puntos (por ejemplo, el color del contorno y el relleno, la forma, el tamaño, etc.), para todos los puntos, o usar la agrupación a partir de los datos (es decir, definir su "estética"). En este ejemplo, agregamos los dos puntos como diamantes (shape = 23), rellenos en rojo oscuro ( fill = "darkred") y de mayor tamaño (size = 1.2):
+
+
+
+```{r}
+
+#coordenadas de la escuela. Filtramos por tipo de servicio de alimentación
+base.esc <- coor_df %>% 
+  left_join(df) %>% 
+  filter(servicio_alimentacion == "SI")
+
+
+#con geom point
+
+map <- ggplot() +
+  geom_sf(data = basedf, aes(fill = pct.etc*100)) +
+  scale_fill_viridis_c(trans = "sqrt", alpha = .4) +
+  geom_point(data = base.esc,
+             aes(x = x, y = y), size = 1.2, shape = 23, alpha = .5, fill = "darkred") +
+  annotation_scale(location = "bl", width_hint = 0.4) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  labs(title = "Alumnos atendidos por Escuelas de Tiempo Completo en CDMX", 
+       subtitle = "Con y sin ingesta de alimentos",
+       caption="Fuente: Elaboracion propia con datos de la SEP 2019",
+       x = "Latitud",
+       y = "Longitud",
+       fill = "Porcentaje") +
+  theme_bw() +
+  theme(panel.grid.major = element_line(color = gray(0.5), 
+                                        linetype = "dashed", 
+                                        size = 0.5), 
+        panel.background = element_rect(fill = "aliceblue")) 
+
+
+##globos
+
+ggplot() +
+  geom_sf(data = basedf, aes(fill = pct.etc*100)) +
+  scale_fill_viridis_c(trans = "sqrt", alpha = .4) +
+  geom_point(data = base.esc,
+             aes(x = x, y = y, size = tot.alum),  colour = 'darkred', alpha = .5) +
+  annotation_scale(location = "bl", width_hint = 0.4) +
+  annotation_north_arrow(location = "bl", which_north = "true", 
+                         pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+                         style = north_arrow_fancy_orienteering) +
+  labs(title = "Alumnos atendidos por Escuelas de Tiempo Completo en CDMX", 
+       subtitle = "Con y sin ingesta de alimentos",
+       caption="Fuente: Elaboracion propia con datos de la SEP 2019",
+       x = "Latitud",
+       y = "Longitud",
+       fill = "Porcentaje") +
+  theme_bw() +
+  theme(panel.grid.major = element_line(color = gray(0.5), linetype = "dashed", 
+                                        size = 0.5), 
+        panel.background = element_rect(fill = "aliceblue")) 
+
+```
+
+
+#convertir cartografias
+
+Este ejemplo demuestra completamente que agregar capas ggplot2es relativamente sencillo, siempre que los datos se almacenen correctamente en un sfobjeto. Agregar capas adicionales simplemente seguiría la misma lógica, con llamadas adicionales al geom_sflugar correcto en la ggplot2secuencia.
+
+```{r}
+
+x <- base.esc %>% 
+  filter(x != "" & y != "")
+
+
+
+sites <- st_as_sf(x, coords = c("x", "y"),  crs = 4326, agr = "constant")
+
+
+ggplot() +
+    geom_sf(data = basedf, aes(fill = pct.etc*100)) +
+    scale_fill_viridis_c(trans = "sqrt", alpha = .4) +
+    geom_sf(data = sites, size = 1.4, shape = 23, fill = "darkred") +
+    coord_sf(xlim = c(-99.15, -98.95), ylim = c(19.29, 19.43)) +
+    geom_text(data = states, aes(X, Y, label = NAME), size = 5)
+ 
+
+```
+
+
+#animación
+
+```{r}
+
+map + transition_time(year) +
+  shadow_mark() +
+  labs(subtitle = "Year:{frame_time}")
+
+anim_save(paste(graphs, "animation.gif", sep = "/"),  width=12, height=12)
+
+anim_save( "animation.gif",  width=12, height=12)
+# Establezca `wrap = FALSE` para evitar la transición del último estado al primer 
+
+```
+
+
